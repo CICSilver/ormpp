@@ -64,7 +64,7 @@ class postgresql {
   bool ping() { return (PQstatus(con_) == CONNECTION_OK); }
 
   template <typename T, typename... Args>
-  bool create_datatable(Args &&...args) {
+  constexpr auto create_datatable(Args &&...args) {
     std::string sql = generate_createtb_sql<T>(std::forward<Args>(args)...);
 #ifdef ORMPP_ENABLE_LOG
     std::cout << sql << std::endl;
@@ -94,14 +94,14 @@ class postgresql {
     return insert_impl(OptType::replace, v, std::forward<Args>(args)...);
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T, typename... Args>
   int update(const T &t, Args &&...args) {
-    return update_impl<members...>(t, std::forward<Args>(args)...);
+    return update_impl(t, std::forward<Args>(args)...);
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T, typename... Args>
   int update(const std::vector<T> &v, Args &&...args) {
-    return update_impl<members...>(v, std::forward<Args>(args)...);
+    return update_impl(v, std::forward<Args>(args)...);
   }
 
   template <typename T, typename... Args>
@@ -200,8 +200,8 @@ class postgresql {
   }
 
   template <typename T, typename... Args>
-  std::enable_if_t<!iguana::is_reflection_v<T>, std::vector<T>> query_s(
-      const std::string &sql, Args &&...args) {
+  constexpr std::enable_if_t<!iguana::is_reflection_v<T>, std::vector<T>>
+  query_s(const std::string &sql, Args &&...args) {
     static_assert(iguana::is_tuple<T>::value);
 #ifdef ORMPP_ENABLE_LOG
     std::cout << sql << std::endl;
@@ -289,7 +289,7 @@ class postgresql {
   }
 
   template <typename T, typename Arg, typename... Args>
-  std::enable_if_t<!iguana::is_reflection_v<T>, std::vector<T>> query(
+  constexpr std::enable_if_t<!iguana::is_reflection_v<T>, std::vector<T>> query(
       const Arg &s, Args &&...args) {
     static_assert(iguana::is_tuple<T>::value);
     constexpr auto SIZE = std::tuple_size_v<T>;
@@ -342,7 +342,7 @@ class postgresql {
   }
 
   // just support execute string sql without placeholders
-  bool execute(const std::string &sql) {
+  auto execute(const std::string &sql) {
 #ifdef ORMPP_ENABLE_LOG
     std::cout << sql << std::endl;
 #endif
@@ -520,37 +520,24 @@ class postgresql {
     return PQresultStatus(res_) == PGRES_COMMAND_OK;
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T>
   std::optional<uint64_t> stmt_execute(const T &t, OptType type,
-                                       Args &&...args) {
+                                       bool condition) {
     std::vector<std::vector<char>> param_values;
-    constexpr auto arr = iguana::indexs_of<members...>();
-    iguana::for_each(t,
-                     [&t, arr, &param_values, type, this](auto item, auto i) {
-                       if (type == OptType::insert &&
-                           is_auto_key<T>(iguana::get_name<T>(i).data())) {
-                         return;
-                       }
-                       if constexpr (sizeof...(members) > 0) {
-                         for (auto idx : arr) {
-                           if (idx == decltype(i)::value) {
-                             set_param_values(param_values, t.*item);
-                           }
-                         }
-                       }
-                       else {
-                         set_param_values(param_values, t.*item);
-                       }
-                     });
-
-    if constexpr (sizeof...(Args) == 0) {
-      if (type == OptType::update) {
-        iguana::for_each(t, [&t, &param_values, this](auto item, auto i) {
-          if (is_conflict_key<T>(iguana::get_name<T>(i).data())) {
-            set_param_values(param_values, t.*item);
-          }
-        });
+    iguana::for_each(t, [&t, &param_values, type, this](auto item, auto i) {
+      if (type == OptType::insert &&
+          is_auto_key<T>(iguana::get_name<T>(i).data())) {
+        return;
       }
+      set_param_values(param_values, t.*item);
+    });
+
+    if (condition && type == OptType::update) {
+      iguana::for_each(t, [&t, &param_values, this](auto item, auto i) {
+        if (is_conflict_key<T>(iguana::get_name<T>(i).data())) {
+          set_param_values(param_values, t.*item);
+        }
+      });
     }
 
     if (param_values.empty()) {
@@ -598,43 +585,43 @@ class postgresql {
     return res.has_value() ? res.value() : INT_MIN;
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T, typename... Args>
   int update_impl(const T &t, Args &&...args) {
-    auto sql = generate_update_sql<T, members...>(std::forward<Args>(args)...);
-    auto res = insert_or_update_impl<members...>(t, sql, OptType::update, false,
-                                                 std::forward<Args>(args)...);
+    bool condition = true;
+    auto sql = generate_update_sql<T>(condition, std::forward<Args>(args)...);
+    auto res = insert_or_update_impl(t, sql, OptType::update, false, condition);
     return res.has_value() ? res.value() : INT_MIN;
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T, typename... Args>
   int update_impl(const std::vector<T> &v, Args &&...args) {
-    auto sql = generate_update_sql<T, members...>(std::forward<Args>(args)...);
-    auto res = insert_or_update_impl<members...>(v, sql, OptType::update, false,
-                                                 std::forward<Args>(args)...);
+    bool condition = true;
+    auto sql = generate_update_sql<T>(condition, std::forward<Args>(args)...);
+    auto res = insert_or_update_impl(v, sql, OptType::update, false, condition);
     return res.has_value() ? res.value() : INT_MIN;
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T>
   std::optional<uint64_t> insert_or_update_impl(const T &t,
                                                 const std::string &sql,
                                                 OptType type,
                                                 bool get_insert_id = false,
-                                                Args &&...args) {
+                                                bool condition = true) {
     if (!prepare<T>(get_insert_id
                         ? sql + "returning " + get_auto_key<T>().data()
                         : sql)) {
       return std::nullopt;
     }
 
-    return stmt_execute<members...>(t, type, std::forward<Args>(args)...);
+    return stmt_execute(t, type, condition);
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T>
   std::optional<uint64_t> insert_or_update_impl(const std::vector<T> &v,
                                                 const std::string &sql,
                                                 OptType type,
                                                 bool get_insert_id = false,
-                                                Args &&...args) {
+                                                bool condition = true) {
     if (!begin()) {
       return std::nullopt;
     }
@@ -647,7 +634,7 @@ class postgresql {
 
     std::optional<uint64_t> res = {0};
     for (auto &item : v) {
-      res = stmt_execute<members...>(item, type, std::forward<Args>(args)...);
+      res = stmt_execute(item, type, condition);
       if (!res.has_value()) {
         rollback();
         return std::nullopt;
@@ -662,8 +649,8 @@ class postgresql {
   }
 
   template <typename T>
-  void set_param_values(std::vector<std::vector<char>> &param_values,
-                        T &&value) {
+  constexpr void set_param_values(std::vector<std::vector<char>> &param_values,
+                                  T &&value) {
     using U = std::remove_const_t<std::remove_reference_t<T>>;
     if constexpr (is_optional_v<U>::value) {
       if (value.has_value()) {
@@ -680,10 +667,7 @@ class postgresql {
     }
     else if constexpr (std::is_integral_v<U> && !iguana::is_int64_v<U>) {
       std::vector<char> temp(20, 0);
-      if constexpr (std::is_same_v<char, U>) {
-        temp.front() = value;
-      }
-      else if constexpr (iguana::is_char_type<U>::value) {
+      if constexpr (iguana::is_char_type<U>::value) {
         itoa_fwd(value, temp.data());
       }
       else {

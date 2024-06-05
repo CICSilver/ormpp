@@ -93,14 +93,14 @@ class sqlite {
     return insert_impl(OptType::replace, v, std::forward<Args>(args)...);
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T, typename... Args>
   int update(const T &t, Args &&...args) {
-    return update_impl<members...>(t, std::forward<Args>(args)...);
+    return update_impl(t, std::forward<Args>(args)...);
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T, typename... Args>
   int update(const std::vector<T> &v, Args &&...args) {
-    return update_impl<members...>(v, std::forward<Args>(args)...);
+    return update_impl(v, std::forward<Args>(args)...);
   }
 
   template <typename T, typename... Args>
@@ -461,6 +461,13 @@ class sqlite {
             else if constexpr (std::is_same_v<decltype(item), ormpp_unique>) {
               unique_fields.insert(field_name.data());
             }
+            else if constexpr (std::is_same_v<decltype(item), ormpp_date_time>) {
+                if (!has_add_field) {
+					append(sql, field_name.data(), " ", type_name_arr[i]);
+                }
+                append(sql, " DEFAULT CURRENT_TIMESTAMP");
+				has_add_field = true;
+            }
             else {
               append(sql, field_name.data(), " ", type_name_arr[i]);
             }
@@ -488,41 +495,31 @@ class sqlite {
     return sql;
   }
 
-  template <auto... members, typename T, typename... Args>
-  int stmt_execute(const T &t, OptType type, Args &&...args) {
-    int index = 1;
+  template <typename T>
+  int stmt_execute(const T &t, OptType type, bool condition) {
+    int index = 0;
     bool bind_ok = true;
-    constexpr auto arr = iguana::indexs_of<members...>();
-    iguana::for_each(
-        t, [&t, arr, &bind_ok, &index, type, this](auto item, auto i) {
-          if ((type == OptType::insert &&
-               is_auto_key<T>(iguana::get_name<T>(i).data())) ||
-              !bind_ok) {
-            return;
-          }
-          if constexpr (sizeof...(members) > 0) {
-            for (auto idx : arr) {
-              if (idx == decltype(i)::value) {
-                bind_ok = set_param_bind(t.*item, index++);
-              }
-            }
-          }
-          else {
-            bind_ok = set_param_bind(t.*item, index++);
-          }
-        });
-
-    if constexpr (sizeof...(Args) == 0) {
-      if (type == OptType::update) {
-        iguana::for_each(t, [&t, &bind_ok, &index, this](auto item, auto i) {
-          if (!bind_ok) {
-            return;
-          }
-          if (is_conflict_key<T>(iguana::get_name<T>(i).data())) {
-            bind_ok = set_param_bind(t.*item, index++);
-          }
-        });
+    iguana::for_each(t, [&t, &bind_ok, &index, type, this](auto item, auto i) {
+      if ((type == OptType::insert &&
+           is_auto_key<T>(iguana::get_name<T>(i).data()) || 
+           is_date_time<T>(iguana::get_name<T>(i).data())) ||
+          !bind_ok) {
+        return;
       }
+      bind_ok = set_param_bind(t.*item, index + 1);
+      index++;
+    });
+
+    if (condition && type == OptType::update) {
+      iguana::for_each(t, [&t, &bind_ok, &index, this](auto item, auto i) {
+        if (!bind_ok) {
+          return;
+        }
+        if (is_conflict_key<T>(iguana::get_name<T>(i).data())) {
+          bind_ok = set_param_bind(t.*item, index + 1);
+          index++;
+        }
+      });
     }
 
     if (!bind_ok) {
@@ -650,28 +647,28 @@ class sqlite {
     return res.has_value() ? res.value() : INT_MIN;
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T, typename... Args>
   int update_impl(const T &t, Args &&...args) {
-    auto sql = generate_update_sql<T, members...>(std::forward<Args>(args)...);
-    auto res = insert_or_update_impl<members...>(t, sql, OptType::update, false,
-                                                 std::forward<Args>(args)...);
+    bool condition = true;
+    auto sql = generate_update_sql<T>(condition, std::forward<Args>(args)...);
+    auto res = insert_or_update_impl(t, sql, OptType::update, false, condition);
     return res.has_value() ? res.value() : INT_MIN;
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T, typename... Args>
   int update_impl(const std::vector<T> &v, Args &&...args) {
-    auto sql = generate_update_sql<T, members...>(std::forward<Args>(args)...);
-    auto res = insert_or_update_impl<members...>(v, sql, OptType::update, false,
-                                                 std::forward<Args>(args)...);
+    bool condition = true;
+    auto sql = generate_update_sql<T>(condition, std::forward<Args>(args)...);
+    auto res = insert_or_update_impl(v, sql, OptType::update, false, condition);
     return res.has_value() ? res.value() : INT_MIN;
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T>
   std::optional<uint64_t> insert_or_update_impl(const T &t,
                                                 const std::string &sql,
                                                 OptType type,
                                                 bool get_insert_id = false,
-                                                Args &&...args) {
+                                                bool condition = true) {
 #ifdef ORMPP_ENABLE_LOG
     std::cout << sql << std::endl;
 #endif
@@ -683,20 +680,19 @@ class sqlite {
 
     auto guard = guard_statment(stmt_);
 
-    if (stmt_execute<members...>(t, type, std::forward<Args>(args)...) ==
-        INT_MIN) {
+    if (stmt_execute(t, type, condition) == INT_MIN) {
       return std::nullopt;
     }
 
     return get_insert_id ? sqlite3_last_insert_rowid(handle_) : 1;
   }
 
-  template <auto... members, typename T, typename... Args>
+  template <typename T>
   std::optional<uint64_t> insert_or_update_impl(const std::vector<T> &v,
                                                 const std::string &sql,
                                                 OptType type,
                                                 bool get_insert_id = false,
-                                                Args &&...args) {
+                                                bool condition = true) {
 #ifdef ORMPP_ENABLE_LOG
     std::cout << sql << std::endl;
 #endif
@@ -713,8 +709,7 @@ class sqlite {
     }
 
     for (auto &item : v) {
-      if (stmt_execute<members...>(item, type, std::forward<Args>(args)...) ==
-          INT_MIN) {
+      if (stmt_execute(item, type, condition) == INT_MIN) {
         rollback();
         return std::nullopt;
       }

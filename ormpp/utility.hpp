@@ -8,8 +8,33 @@
 #include "entity.hpp"
 #include "iguana/reflection.hpp"
 #include "type_mapping.hpp"
-
 namespace ormpp {
+
+inline std::unordered_map<std::string_view, std::string_view>
+    g_ormpp_date_time_map;
+
+inline int add_date_time_field(std::string_view key, std::string_view value) {
+	g_ormpp_date_time_map.emplace(key, value);
+	return 0;
+}
+
+template <typename T>
+inline int get_data_time() {
+	using U = decltype(iguana_reflect_members(std::declval<T>()));
+	auto it = g_ormpp_date_time_map.find(U::struct_name());
+	return it == g_ormpp_date_time_map.end() ? "" : it->second;
+}
+
+template <typename T>
+inline auto is_date_time(std::string_view field_name) {
+	using U = decltype(iguana_reflect_members(std::declval<T>()));
+	auto it = g_ormpp_date_time_map.find(U::struct_name());
+	return it == g_ormpp_date_time_map.end() ? false : it->second == field_name;
+}
+
+#define REGISTER_DATE_TIME(STRUCT_NAME, KEY)         \
+  inline auto IGUANA_UNIQUE_VARIABLE(STRUCT_NAME) = \
+	  ormpp::add_date_time_field(#STRUCT_NAME, #KEY);
 
 inline std::unordered_map<std::string_view, std::string_view>
     g_ormpp_auto_key_map;
@@ -315,6 +340,9 @@ inline std::string generate_insert_sql(bool insert, Args &&...args) {
     if (insert && is_auto_key<T>(field_name)) {
       continue;
     }
+    if (insert && is_date_time<T>(field_name)) {
+        continue;
+    }
 #ifdef ORMPP_ENABLE_PG
     values += "$" + std::to_string(++index);
 #else
@@ -335,69 +363,57 @@ inline std::string generate_insert_sql(bool insert, Args &&...args) {
     }
   }
   if (fields.back() != ')') {
-    fields.pop_back();
+    //fields.pop_back();
     fields.back() = ')';
   }
   if (values.back() != ')') {
-    values.pop_back();
+    //values.pop_back();
     values.back() = ')';
   }
   append(sql, fields, values);
   return sql;
 }
 
-template <typename T, auto... members, typename... Args>
-inline std::string generate_update_sql(Args &&...args) {
+template <typename T, typename... Args>
+inline std::string generate_update_sql(bool &condition, Args &&...args) {
   constexpr auto SIZE = iguana::get_value<T>();
   std::string sql = "update ";
   auto name = get_name<T>();
   append(sql, name.data());
   append(sql, "set");
-  std::string fields;
-#ifdef ORMPP_ENABLE_PG
-  int index = 0;
-#endif
 
-  if constexpr (sizeof...(members) > 0) {
-#ifdef ORMPP_ENABLE_PG
-    (fields.append(iguana::name_of<members>())
-         .append("=$" + std::to_string(++index) + ","),
-     ...);
-#else
-    (fields.append(iguana::name_of<members>()).append("=?,"), ...);
-#endif
-  }
-  else {
-    for (size_t i = 0; i < SIZE; ++i) {
-      std::string field_name = iguana::get_name<T>(i).data();
+  int index = 0;
+  std::string fields;
+  for (size_t i = 0; i < SIZE; ++i) {
+    std::string field_name = iguana::get_name<T>(i).data();
 #ifdef ORMPP_ENABLE_MYSQL
-      fields.append("`").append(field_name).append("`");
+    fields += "`" + field_name + "`";
 #else
-      fields.append(field_name);
+    fields += field_name;
 #endif
 #ifdef ORMPP_ENABLE_PG
-      fields.append("=$").append(std::to_string(++index)).append(",");
+    append(fields, " =", "$" + std::to_string(++index));
 #else
-      fields.append("=?,");
+    fields += " = ?";
 #endif
+    if (i < SIZE - 1) {
+      fields += ", ";
     }
   }
-  fields.pop_back();
-
   std::string conflict = "where 1=1";
   if constexpr (sizeof...(Args) > 0) {
     append(conflict, " and", args...);
+    condition = false;
   }
   else {
     for (const auto &it : get_conflict_keys<T>()) {
 #ifdef ORMPP_ENABLE_PG
-      append(conflict, " and", it + "=$" + std::to_string(++index));
+      append(conflict, " and", it, "=", "$" + std::to_string(++index));
 #else
-      append(conflict, " and", it + "=?");
+      append(conflict, " and", it, "= ?");
 #endif
     }
   }
-
   append(sql, fields, conflict);
   return sql;
 }
