@@ -22,4 +22,8 @@ struct ormpp_unique {
   std::set<std::string> fields;
 };
 
+struct ormpp_date_time {
+	std::string fields;
+};
+
 #endif  // ORM_ENTITY_HPP

@@ -13,10 +13,9 @@ namespace frozen {
 
 #ifdef FROZEN_LETITGO_HAS_STRING_VIEW
 
-template <typename CharT>
-struct elsa<std::basic_string_view<CharT>> {
-  constexpr std::size_t operator()(
-      const std::basic_string_view<CharT> &value) const {
+template <typename CharT> struct elsa<std::basic_string_view<CharT>> {
+  constexpr std::size_t
+  operator()(const std::basic_string_view<CharT> &value) const {
     return hash_string(value);
   }
   constexpr std::size_t operator()(const std::basic_string_view<CharT> &value,
@@ -27,10 +26,9 @@ struct elsa<std::basic_string_view<CharT>> {
 
 #endif
 
-template <typename CharT>
-struct elsa<std::basic_string<CharT>> {
-  constexpr std::size_t operator()(
-      const std::basic_string<CharT> &value) const {
+template <typename CharT> struct elsa<std::basic_string<CharT>> {
+  constexpr std::size_t
+  operator()(const std::basic_string<CharT> &value) const {
     return hash_string(value);
   }
   constexpr std::size_t operator()(const std::basic_string<CharT> &value,
@@ -39,6 +37,6 @@ struct elsa<std::basic_string<CharT>> {
   }
 };
 
-}  // namespace frozen
+} // namespace frozen
 
-#endif  // FROZEN_LETITGO_BITS_ELSA_STD_H
+#endif // FROZEN_LETITGO_BITS_ELSA_STD_H
